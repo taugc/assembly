@@ -1,0 +1,279 @@
+## TauGC Trinity_RNASeq v. 1.0 - Jan 2020
+
+###############################################################################
+
+## SET WORKDIR
+BASE_DIR = "fastq"
+HOME_DIR = "/home/user"
+TOOL_DIR = HOME_DIR + "/tools"
+REFERENCE_DIR = HOME_DIR + "/references"
+
+## SET TOOLDIR
+TRIMMO_DIR= TOOL_DIR + "/Trimmomatic-0.32"
+FASTQC_DIR= ""
+SORTMERNA_DIR= TOOL_DIR + "/sortmerna-2.1b"
+TRINITY_DIR= TOOL_DIR + "/Trinityrnaseq-v2.6.6"
+BLAST_DIR= TOOL_DIR + "/ncbi-blast-2.8.1+/bin"
+BOWTIE2_DIR= "" 
+SAMTOOLS_DIR= ""
+
+## SET VARIABLES
+illuminaclip = "TruSeq3-PE-2.fa"
+leading_trailing = "1"
+sliding_window = "1:1"
+min_length = "10"
+SWISSPROT_DIR= REFERENCE_DIR + "/swissprot/"
+trinity_max_mem= "5G" 
+bfly_heap_mem= "" 
+#--bflyHeapSpaceMax 
+
+################################################################################
+
+
+## samples
+
+SAMPLES,= glob_wildcards("fastq/{smp}_R1_001.fastq.gz")
+NB_SAMPLES = len(SAMPLES)
+
+## rules
+
+rule all:
+	input:
+		expand("fastq/{smp}_R{num}_001_fastqc.zip", smp=SAMPLES, num=["1","2"]),
+		expand("fastq/{smp}_R{num}_001_trim_paired_fastqc.zip", smp=SAMPLES, num=["1","2"]),
+		expand("fastq/trinity_assembly/{smp}_001_trim_paired_merged_nonrRNA.bam.stats", smp=SAMPLES),
+		expand("fastq/{smp}_sample_file", smp=SAMPLES),
+		"fastq/trinity_assembly/blastx.outfmt6.stats",
+		"fastq/trinity_assembly/Trinity.fasta.stats",
+		"fastq/trinity_assembly/N50/ExN50.stats.pdf",
+		"fastq/trinity_assembly/Trinity.fasta.index"
+
+
+ruleorder: pre_trim_fastq > trim_fastq > post_trim_fastq > unmerge_paired_reads
+
+rule pre_trim_fastq:
+	input:
+		"{BASE_DIR}/{smp}_R1_001.fastq.gz",
+		"{BASE_DIR}/{smp}_R2_001.fastq.gz"
+	output:
+		"{BASE_DIR}/{smp}_R1_001_fastqc.zip",
+		"{BASE_DIR}/{smp}_R2_001_fastqc.zip"
+	shell:"""
+		{FASTQC_DIR}fastqc --outdir {BASE_DIR} -f fastq {input}
+	"""
+
+rule trim_fastq:
+	input:
+		fastqR1="{BASE_DIR}/{smp}_R1_001.fastq.gz",
+		fastqR2="{BASE_DIR}/{smp}_R2_001.fastq.gz"
+	output:
+		fastqR1_trim= "{BASE_DIR}/{smp}_R1_001_trim_paired.fastq.gz",
+		fastqR2_trim= "{BASE_DIR}/{smp}_R2_001_trim_paired.fastq.gz",
+		fastqR1_unpaired= temp("{BASE_DIR}/{smp}_R1_001_trim_unpaired.fastq.gz"),
+		fastqR2_unpaired= temp("{BASE_DIR}/{smp}_R2_001_trim_unpaired.fastq.gz")
+	shell:"""
+		java -jar {TRIMMO_DIR}/trimmomatic-0.32.jar PE -phred33 {input.fastqR1} {input.fastqR2} {output.fastqR1_trim} {output.fastqR1_unpaired} {output.fastqR2_trim} {output.fastqR2_unpaired} ILLUMINACLIP:{illuminaclip}:2:30:10 LEADING:{leading_trailing} TRAILING:{leading_trailing} SLIDINGWINDOW:{sliding_window} MINLEN:{min_length} 2>{BASE_DIR}/{wildcards.smp}_trimlog
+	"""
+
+rule post_trim_fastq:
+	input:
+		 "{BASE_DIR}/{smp}_R1_001_trim_paired.fastq.gz",
+		 "{BASE_DIR}/{smp}_R2_001_trim_paired.fastq.gz"
+	output:
+		"{BASE_DIR}/{smp}_R1_001_trim_paired_fastqc.zip",
+		"{BASE_DIR}/{smp}_R2_001_trim_paired_fastqc.zip"
+	shell:"""
+		{FASTQC_DIR}fastqc --outdir {BASE_DIR} -f fastq {input}
+	"""
+
+rule gunzip_run:
+	input:
+		fastqR1_trim= "{BASE_DIR}/{smp}_R1_001_trim_paired.fastq.gz",
+		fastqR2_trim= "{BASE_DIR}/{smp}_R2_001_trim_paired.fastq.gz"
+	output:
+		fastqR1_unzip= temp("{BASE_DIR}/{smp}_R1_001_trim_paired.fastq"),
+		fastqR2_unzip= temp("{BASE_DIR}/{smp}_R2_001_trim_paired.fastq")
+	shell:"""
+		gunzip -k -c {input.fastqR1_trim} > {output.fastqR1_unzip}
+		gunzip -k -c {input.fastqR2_trim} > {output.fastqR2_unzip} 
+	"""
+
+rule merge_paired_reads:
+	input: 	
+		fastqR1_unzip= "{BASE_DIR}/{smp}_R1_001_trim_paired.fastq",
+		fastqR2_unzip= "{BASE_DIR}/{smp}_R2_001_trim_paired.fastq"
+	output:
+		fastq_merged_paired= temp("{BASE_DIR}/{smp}_001_trim_paired_merged.fastq")
+	shell:"""
+		{SORTMERNA_DIR}/scripts/merge-paired-reads.sh {input.fastqR1_unzip} {input.fastqR2_unzip} {output.fastq_merged_paired}
+	"""
+
+rule sortmerna_run:
+	input:
+		fastq_merged_paired= "{BASE_DIR}/{smp}_001_trim_paired_merged.fastq"
+	output:
+		trim_nonrRNA= "{BASE_DIR}/{smp}_001_trim_paired_merged_nonrRNA.fastq"
+	threads:8
+	shell:"""
+		{SORTMERNA_DIR}/sortmerna --ref {SORTMERNA_DIR}/rRNA_databases/silva-bac-16s-id90.fasta,{SORTMERNA_DIR}/index/silva-bac-16s-db:{SORTMERNA_DIR}/rRNA_databases/silva-bac-23s-id98.fasta,{SORTMERNA_DIR}/index/silva-bac-23s-db:{SORTMERNA_DIR}/rRNA_databases/silva-arc-16s-id95.fasta,{SORTMERNA_DIR}/index/silva-arc-16s-db:{SORTMERNA_DIR}/rRNA_databases/silva-arc-23s-id98.fasta,{SORTMERNA_DIR}/index/silva-arc-23s-db:{SORTMERNA_DIR}/rRNA_databases/silva-euk-18s-id95.fasta,{SORTMERNA_DIR}/index/silva-euk-18s-db:{SORTMERNA_DIR}/rRNA_databases/silva-euk-28s-id98.fasta,{SORTMERNA_DIR}/index/silva-euk-28s:{SORTMERNA_DIR}/rRNA_databases/rfam-5s-database-id98.fasta,{SORTMERNA_DIR}/index/rfam-5s-db:{SORTMERNA_DIR}/rRNA_databases/rfam-5.8s-database-id98.fasta,{SORTMERNA_DIR}/index/rfam-5.8s-db --reads {input.fastq_merged_paired} --sam --num_alignments 1 --fastx --aligned {BASE_DIR}/{wildcards.smp}_001_trim_paired_merged_rRNA --other {BASE_DIR}/{wildcards.smp}_001_trim_paired_merged_nonrRNA --paired_in --log -a {threads} -v
+		ls {output.trim_nonrRNA}
+	"""
+
+rule unmerge_paired_reads:
+	input: 	
+		trim_nonrRNA= "{BASE_DIR}/{smp}_001_trim_paired_merged_nonrRNA.fastq"
+	output:
+		trim_R1_nonrRNA= temp("{BASE_DIR}/{smp}_R1_001_trim_paired_merged_nonrRNA.fastq"),
+		trim_R2_nonrRNA= temp("{BASE_DIR}/{smp}_R2_001_trim_paired_merged_nonrRNA.fastq")
+	shell:"""
+		{SORTMERNA_DIR}/scripts/unmerge-paired-reads.sh {input.trim_nonrRNA} {output.trim_R1_nonrRNA} {output.trim_R2_nonrRNA}
+	"""
+
+rule gzip_run:
+	input:
+		trim_R1_nonrRNA= "{BASE_DIR}/{smp}_R1_001_trim_paired_merged_nonrRNA.fastq",
+		trim_R2_nonrRNA= "{BASE_DIR}/{smp}_R2_001_trim_paired_merged_nonrRNA.fastq"
+	output:
+		trim_R1_nonrRNA_gzip= "{BASE_DIR}/{smp}_R1_001_trim_paired_merged_nonrRNA.fastq.gz",
+		trim_R2_nonrRNA_gzip= "{BASE_DIR}/{smp}_R2_001_trim_paired_merged_nonrRNA.fastq.gz"
+	shell:"""
+		gzip -c {input.trim_R1_nonrRNA} > {output.trim_R1_nonrRNA_gzip}
+		gzip -c {input.trim_R2_nonrRNA} > {output.trim_R2_nonrRNA_gzip} 
+	"""
+
+rule create_sample_file:
+	input: 
+		trim_R1_nonrRNA_gzip= "{BASE_DIR}/{smp}_R1_001_trim_paired_merged_nonrRNA.fastq.gz",
+		trim_R2_nonrRNA_gzip= "{BASE_DIR}/{smp}_R2_001_trim_paired_merged_nonrRNA.fastq.gz"
+	output:
+		sample_file_line= temp("{BASE_DIR}/{smp}_sample_file")
+	shell:"""
+		echo -e "{wildcards.smp}\t{wildcards.smp}\t{input.trim_R1_nonrRNA_gzip}\t{input.trim_R2_nonrRNA_gzip}" > {output.sample_file_line}
+	"""
+
+rule create_sample_file_check:
+	input: 
+		sample_file_line= expand("fastq/{smp}_sample_file", smp=SAMPLES)
+	output: 
+		sample_file= "{BASE_DIR}/sample_file"
+	shell:"""
+		cat {input.sample_file_line} >> {output.sample_file}
+	"""
+
+rule trinity_run:
+	input:
+		sample_file= "{BASE_DIR}/sample_file"
+	output:
+		trinity_assembly= "{BASE_DIR}/trinity_assembly/Trinity.fasta"
+	threads:40
+	shell:"""
+		{TRINITY_DIR}/Trinity --seqType fq --samples_file {input.sample_file} --SS_lib_type RF --max_memory {trinity_max_mem} --CPU {threads} {bfly_heap_mem} --output fastq/trinity_assembly
+		touch {output.trinity_assembly}
+	"""
+
+rule trinity_stats:
+	input:
+		trinity_assembly= "{BASE_DIR}/trinity_assembly/Trinity.fasta"
+	output: 
+		number_contigs= "{BASE_DIR}/trinity_assembly/Trinity.fasta.number",
+		trinity_stats= "{BASE_DIR}/trinity_assembly/Trinity.fasta.stats"
+	shell:"""
+		grep ">" {input.trinity_assembly} | wc -l >> {output.number_contigs}
+		{TRINITY_DIR}/util/TrinityStats.pl {input.trinity_assembly} > {output.trinity_stats}
+	"""
+
+rule blastx:
+	input:
+		trinity_assembly= "{BASE_DIR}/trinity_assembly/Trinity.fasta"
+	output:
+		blastx= "{BASE_DIR}/trinity_assembly/blastx.outfmt6"
+	threads:40
+	shell:"""
+		{BLAST_DIR}/blastx -query {input.trinity_assembly} -db {SWISSPROT_DIR}/swissprot.00 -out {output.blastx} -evalue 1e-20 -num_threads {threads} -max_target_seqs 1 -outfmt 6
+	"""
+
+rule blastx_stats:
+	input:
+		trinity_assembly= "{BASE_DIR}/trinity_assembly/Trinity.fasta",
+		blastx= "{BASE_DIR}/trinity_assembly/blastx.outfmt6"
+	output:
+		blastx_stats= "{BASE_DIR}/trinity_assembly/blastx.outfmt6.stats"
+
+	shell:"""
+		{TRINITY_DIR}/util/analyze_blastPlus_topHit_coverage.pl {input.blastx} {input.trinity_assembly} {SWISSPROT_DIR}/swissprot.fa column -t >>{output.blastx_stats}
+	"""
+
+rule bowtie2_index:
+	input:
+		trinity_assembly= "{BASE_DIR}/trinity_assembly/Trinity.fasta"
+	output:
+		trinity_assembly_index = "{BASE_DIR}/trinity_assembly/Trinity.fasta.index"
+	threads:16
+	shell:"""
+		{BOWTIE2_DIR}bowtie2-build -t {threads} {input.trinity_assembly} {BASE_DIR}/trinity_assembly/Trinity.fasta.index
+		touch {output.trinity_assembly_index}
+	"""
+
+rule bowtie2_run:
+	input:
+		trim_R1_nonrRNA_gzip= "{BASE_DIR}/{smp}_R1_001_trim_paired_merged_nonrRNA.fastq.gz",
+		trim_R2_nonrRNA_gzip= "{BASE_DIR}/{smp}_R2_001_trim_paired_merged_nonrRNA.fastq.gz",
+		trinity_assembly_index= "{BASE_DIR}/trinity_assembly/Trinity.fasta.index"
+
+	output:
+		bowtie_bam= "{BASE_DIR}/trinity_assembly/{smp}_001_trim_paired_merged_nonrRNA.bam",
+		bowtie_bam_stats= "{BASE_DIR}/trinity_assembly/{smp}_001_trim_paired_merged_nonrRNA.bam.stats"
+	threads:16
+	shell:"""
+		{BOWTIE2_DIR}bowtie2 -t --local --no-unal -x {input.trinity_assembly_index} -q -1 {input.trim_R1_nonrRNA_gzip} -2 {input.trim_R2_nonrRNA_gzip} 2>{output.bowtie_bam_stats} | {SAMTOOLS_DIR}samtools view -Sb | {SAMTOOLS_DIR}samtools sort -o {output.bowtie_bam}
+	"""
+
+rule estimate_abundance:
+	input:
+		sample_file= "fastq/sample_file",
+		trinity_assembly= "fastq/trinity_assembly/Trinity.fasta"
+	output:
+		N50_quant_sf= expand("{smp}/quant.sf", smp=SAMPLES)
+	shell:"""
+		{TRINITY_DIR}/util/align_and_estimate_abundance.pl --seqType fq --samples_file {input.sample_file} --transcripts {input.trinity_assembly} --est_method salmon --trinity_mode --prep_reference
+	"""
+
+rule quant_file:
+	input:
+		N50_quant_sf= expand("{smp}/quant.sf", smp=SAMPLES)
+	output: 
+		quant_file="{BASE_DIR}/trinity_assembly/N50/quant_files.txt"
+	shell:"""
+		ls -1 {input.N50_quant_sf} | tee {output.quant_file}
+	"""
+
+rule abundance_estimates_matrix:
+	input:
+		quant_file="{BASE_DIR}/trinity_assembly/N50/quant_files.txt"
+	output: 
+		salmon_matrix= "{BASE_DIR}/trinity_assembly/N50/salmon.isoform.TMM.EXPR.matrix"
+	shell:"""
+		{TRINITY_DIR}/util/abundance_estimates_to_matrix.pl --est_method salmon --quant_files {input.quant_file} --name_sample_by_basedir --out_prefix fastq/trinity_assembly/N50/salmon --gene_trans_map fastq/trinity_assembly/Trinity.fasta.gene_trans_map
+		ls {output.salmon_matrix}
+	"""
+
+rule ExN50_stats:
+	input:
+		salmon_matrix= "{BASE_DIR}/trinity_assembly/N50/salmon.isoform.TMM.EXPR.matrix",
+		trinity_assembly= "{BASE_DIR}/trinity_assembly/Trinity.fasta"
+	output:
+		N50_stats= "{BASE_DIR}/trinity_assembly/N50/ExN50.stats"
+	shell:"""
+		{TRINITY_DIR}/util/misc/contig_ExN50_statistic.pl {input.salmon_matrix} {input.trinity_assembly} > {output.N50_stats}
+	"""
+
+rule ExN50_graph:
+	input: 
+		N50_stats= "{BASE_DIR}/trinity_assembly/N50/ExN50.stats"
+	output:
+		"{BASE_DIR}/trinity_assembly/N50/ExN50.stats.pdf"
+	
+	shell:"""
+		{TRINITY_DIR}/util/misc/plot_ExN50_statistic.Rscript {input.N50_stats}
+		touch {output}
+	"""

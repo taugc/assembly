@@ -1,0 +1,238 @@
+## TauGC UniCycler_Spades_DeNovoBac v. 1.0 - Jan 2020
+
+###############################################################################
+
+## SET WORKDIR
+BASE_DIR = "fastq"
+HOME_DIR = "/home/user"
+TOOL_DIR = HOME_DIR + "/tools"
+REFERENCE_DIR_PHIX = "/PhiX/Illumina/RTA/Sequence/BWAIndex/genome.fa"
+REFERENCE_DIR = "/Sequence/WholeGenomeFasta/genome.fa"
+PROKKA_GBK="/Pseudomonas_aeruginosa_PAO1_107.gbk"
+
+## SET TOOLDIR
+TRIMMO_DIR= TOOL_DIR + "/Trimmomatic-0.38"
+FASTQC_DIR= TOOL_DIR + "/FastQC"
+BWA_DIR= ""
+SAMTOOLS_DIR= ""
+BOWTIE2_DIR= ""
+SPADES_DIR= TOOL_DIR + "/SPAdes-3.13.0-Linux"
+QUAST_DIR= TOOL_DIR + "/quast-5.0.2"
+PROKKA_DIR=""
+UNICYCLER_DIR=""
+
+## SET VARIABLES
+illuminaclip = "NexteraPE-PE.fa"
+leading_trailing = "5"
+sliding_window = "4:15"
+min_length = "75"
+max_mem= "14"
+unicycler_mode ="bold"
+
+################################################################################
+
+## samples
+
+SAMPLES,= glob_wildcards("fastq/{smp}_R1_001.fastq.gz")
+NB_SAMPLES = len(SAMPLES)
+
+## rules
+
+rule all:
+	input:
+		expand("fastq/{smp}_R{num}_001_fastqc.zip", smp=SAMPLES, num=["1","2"]),
+		expand("fastq/{smp}_R{num}_001_trim_paired_fastqc.zip", smp=SAMPLES, num=["1","2"]),
+		expand("fastq/{smp}_001_trim_paired_aligned_sorted.bam.stats", smp=SAMPLES),
+		expand("fastq/{smp}_spades_assembly/quast.ok",smp=SAMPLES),
+		expand("fastq/{smp}_spades_assembly/spades.ok",smp=SAMPLES),
+		expand("fastq/{smp}_spades_assembly/prokka.ok",smp=SAMPLES),
+		expand("fastq/{smp}_unicycler_assembly/unicycler.ok",smp=SAMPLES),
+		expand("fastq/{smp}_unicycler_assembly/quast.ok",smp=SAMPLES),
+		expand("fastq/{smp}_unicycler_assembly/prokka.ok",smp=SAMPLES),
+		expand("fastq/{smp}_spades_assembly/bowtie.ok",smp=SAMPLES),
+		expand("fastq/{smp}_unicycler_assembly/bowtie.ok",smp=SAMPLES)
+
+rule pre_trim_fastq:
+	input:
+		"{BASE_DIR}/{smp}_R1_001.fastq.gz",
+		"{BASE_DIR}/{smp}_R2_001.fastq.gz"
+	output:
+		"{BASE_DIR}/{smp}_R1_001_fastqc.zip",
+		"{BASE_DIR}/{smp}_R2_001_fastqc.zip"
+	shell:"""
+		{FASTQC_DIR}/fastqc --outdir {BASE_DIR} -f fastq {input}
+	"""
+
+rule trim_fastq:
+	input:
+		fastqR1="{BASE_DIR}/{smp}_R1_001.fastq.gz",
+		fastqR2="{BASE_DIR}/{smp}_R2_001.fastq.gz"
+	output:
+		fastqR1_trim= temp("{BASE_DIR}/{smp}_R1_001_trim_paired.fastq.gz"),
+		fastqR2_trim= temp("{BASE_DIR}/{smp}_R2_001_trim_paired.fastq.gz"),
+		fastqR1_unpaired= temp("{BASE_DIR}/{smp}_R1_001_trim_unpaired.fastq.gz"),
+		fastqR2_unpaired= temp("{BASE_DIR}/{smp}_R2_001_trim_unpaired.fastq.gz")
+	shell:"""
+		java -jar {TRIMMO_DIR}/trimmomatic-0.38.jar PE -phred33 {input.fastqR1} {input.fastqR2} {output.fastqR1_trim} {output.fastqR1_unpaired} {output.fastqR2_trim} {output.fastqR2_unpaired} ILLUMINACLIP:{illuminaclip}:2:30:10 LEADING:{leading_trailing} TRAILING:{leading_trailing} SLIDINGWINDOW:{sliding_window} MINLEN:{min_length} 2>{BASE_DIR}/{wildcards.smp}_trimlog
+	"""
+
+rule post_trim_fastq:
+	input:
+		 "{BASE_DIR}/{smp}_R1_001_trim_paired.fastq.gz",
+		 "{BASE_DIR}/{smp}_R2_001_trim_paired.fastq.gz"
+	output:
+		"{BASE_DIR}/{smp}_R1_001_trim_paired_fastqc.zip",
+		"{BASE_DIR}/{smp}_R2_001_trim_paired_fastqc.zip"
+	shell:"""
+		{FASTQC_DIR}/fastqc --outdir {BASE_DIR} -f fastq {input}
+	"""
+
+rule align_bwa_phix:
+	input:
+		fastqR1_trim= "{BASE_DIR}/{smp}_R1_001_trim_paired.fastq.gz",
+		fastqR2_trim= "{BASE_DIR}/{smp}_R2_001_trim_paired.fastq.gz"
+	output:
+		aligned_sam= temp("{BASE_DIR}/{smp}_001_trim_paired_aligned.sam")
+	shell:"""
+		{BWA_DIR}bwa mem -M {REFERENCE_DIR_PHIX} {input.fastqR1_trim} {input.fastqR2_trim} >{output.aligned_sam}
+	"""
+
+rule samtools_samtobam_sort_stats:
+	input:
+		aligned_sam="{BASE_DIR}/{smp}_001_trim_paired_aligned.sam"
+	output:
+		bam=temp("{BASE_DIR}/{smp}_001_trim_paired_aligned_sorted.bam")
+	shell:"""
+		{SAMTOOLS_DIR}samtools view -Sb {input.aligned_sam} | {SAMTOOLS_DIR}samtools sort -o {output.bam}
+	"""
+
+rule samtools_flagstat:
+	input:
+		bam="{BASE_DIR}/{smp}_001_trim_paired_aligned_sorted.bam"
+	output:
+		bam_stats="{BASE_DIR}/{smp}_001_trim_paired_aligned_sorted.bam.stats"
+	shell:"""
+		{SAMTOOLS_DIR}samtools flagstat {input.bam} >{output.bam_stats}
+	"""
+
+rule extract_unmap_phix_bam:
+	input:
+		bam="{BASE_DIR}/{smp}_001_trim_paired_aligned_sorted.bam"
+	output:
+		unmap_bam=temp("{BASE_DIR}/{smp}_001_trim_paired_aligned_sorted_unmapped.bam")
+	shell:"""
+		{SAMTOOLS_DIR}samtools view -b -F 2 {input.bam} >{output.unmap_bam}
+	"""
+
+rule extract_unmap_phix_reads:
+	input:
+		unmap_bam="{BASE_DIR}/{smp}_001_trim_paired_aligned_sorted_unmapped.bam"
+	output:
+		fastqR1_unmapped=temp("{BASE_DIR}/{smp}.trim.paired.aligned.unmapped_R1.fq"),
+		fastqR2_unmapped=temp("{BASE_DIR}/{smp}.trim.paired.aligned.unmapped_R2.fq")
+	shell:"""
+		{SAMTOOLS_DIR}samtools bam2fq -1 {output.fastqR1_unmapped} -2 {output.fastqR2_unmapped} {input.unmap_bam}
+	"""
+
+rule gzip_run:
+	input:
+		fastqR1_unmapped="{BASE_DIR}/{smp}.trim.paired.aligned.unmapped_R1.fq",
+		fastqR2_unmapped="{BASE_DIR}/{smp}.trim.paired.aligned.unmapped_R2.fq"
+	output:
+		fastqR1_unmapped_zip="{BASE_DIR}/{smp}.trim.paired.aligned.unmapped_R1.fastq.gz",
+		fastqR2_unmapped_zip="{BASE_DIR}/{smp}.trim.paired.aligned.unmapped_R2.fastq.gz"
+	shell:"""
+		gzip -c {input.fastqR1_unmapped} > {output.fastqR1_unmapped_zip}
+		gzip -c {input.fastqR2_unmapped} > {output.fastqR2_unmapped_zip}
+	"""
+
+rule spades_assembly:
+	input:
+		fastqR1_unmapped_zip="{BASE_DIR}/{smp}.trim.paired.aligned.unmapped_R1.fastq.gz",
+		fastqR2_unmapped_zip="{BASE_DIR}/{smp}.trim.paired.aligned.unmapped_R2.fastq.gz"
+	output:
+		spades_check="{BASE_DIR}/{smp}_spades_assembly/spades.ok",
+		spades_scaffold="{BASE_DIR}/{smp}_spades_assembly/scaffolds.fasta"
+
+	shell:"""
+		{SPADES_DIR}/bin/spades.py --pe1-1 {input.fastqR1_unmapped_zip} --pe1-2 {input.fastqR2_unmapped_zip} -o {BASE_DIR}/{wildcards.smp}_spades_assembly --memory {max_mem}
+		touch {output.spades_check}
+		ls {output.spades_scaffold}
+	"""
+rule unicycler_assembly:
+	input:
+		fastqR1_unmapped_zip="{BASE_DIR}/{smp}.trim.paired.aligned.unmapped_R1.fastq.gz",
+		fastqR2_unmapped_zip="{BASE_DIR}/{smp}.trim.paired.aligned.unmapped_R2.fastq.gz"
+
+	output:
+		unicycler_check="{BASE_DIR}/{smp}_unicycler_assembly/unicycler.ok",
+		unicycler_scaffold="{BASE_DIR}/{smp}_unicycler_assembly/assembly.fasta"
+
+	shell:"""
+		{UNICYCLER_DIR}unicycler -1 {input.fastqR1_unmapped_zip} -2 {input.fastqR2_unmapped_zip} --keep 0 --mode {unicycler_mode} -o {BASE_DIR}/{wildcards.smp}_unicycler_assembly
+		touch {output.unicycler_check}
+	"""
+
+rule run_quast:
+	input:
+		spades_scaffold="{BASE_DIR}/{smp}_spades_assembly/scaffolds.fasta",
+		unicycler_scaffold="{BASE_DIR}/{smp}_unicycler_assembly/assembly.fasta",
+	output:
+		quast_spades_check="{BASE_DIR}/{smp}_spades_assembly/quast.ok",
+		quast_unicycler_check="{BASE_DIR}/{smp}_unicycler_assembly/quast.ok",
+	shell:"""
+		{QUAST_DIR}/quast.py {input.spades_scaffold} -r {REFERENCE_DIR} --glimmer --threads 8 --circos -o {BASE_DIR}/{wildcards.smp}_spades_assembly/quast
+		{QUAST_DIR}/quast.py {input.unicycler_scaffold} -r {REFERENCE_DIR} --glimmer --threads 8 --circos -o {BASE_DIR}/{wildcards.smp}_unicycler_assembly/quast
+		touch {output.quast_spades_check}
+		touch {output.quast_unicycler_check}
+	"""
+
+rule run_prokka:
+	input:
+		spades_scaffold="{BASE_DIR}/{smp}_spades_assembly/scaffolds.fasta",
+		unicycler_scaffold="{BASE_DIR}/{smp}_unicycler_assembly/assembly.fasta"
+	output:
+		prokka_spades_check="{BASE_DIR}/{smp}_spades_assembly/prokka.ok",
+		prokka_unicycler_check="{BASE_DIR}/{smp}_unicycler_assembly/prokka.ok"
+	shell:"""
+		{PROKKA_DIR}prokka --proteins {PROKKA_GBK} --outdir {BASE_DIR}/{wildcards.smp}_spades_assembly/prokka --prefix {wildcards.smp} {input.spades_scaffold}
+		{PROKKA_DIR}prokka --proteins {PROKKA_GBK} --outdir {BASE_DIR}/{wildcards.smp}_unicycler_assembly/prokka --prefix {wildcards.smp} {input.unicycler_scaffold}
+		touch {output.prokka_spades_check}
+		touch {output.prokka_unicycler_check}
+	"""
+
+rule bowtie2_index:
+	input:
+		spades_scaffold= "{BASE_DIR}/{smp}_spades_assembly/scaffolds.fasta",
+		unicycler_scaffold="{BASE_DIR}/{smp}_unicycler_assembly/assembly.fasta"
+	output:
+		spades_scaffold_index = "{BASE_DIR}/{smp}_spades_assembly/index.ok",
+		unicycler_scaffold_index = "{BASE_DIR}/{smp}_unicycler_assembly/index.ok"
+	shell:"""
+		{BOWTIE2_DIR}bowtie2-build -t 4 {input.spades_scaffold} {BASE_DIR}/{wildcards.smp}_spades_assembly/scaffolds
+		{BOWTIE2_DIR}bowtie2-build -t 4 {input.unicycler_scaffold} {BASE_DIR}/{wildcards.smp}_unicycler_assembly/assembly
+		touch {output.spades_scaffold_index}
+		touch {output.unicycler_scaffold_index}
+	"""
+
+rule bowtie2_run:
+        input:
+                fastqR1_unmapped_zip="{BASE_DIR}/{smp}.trim.paired.aligned.unmapped_R1.fastq.gz",
+                fastqR2_unmapped_zip="{BASE_DIR}/{smp}.trim.paired.aligned.unmapped_R2.fastq.gz",
+		spades_scaffold_index="{BASE_DIR}/{smp}_spades_assembly/index.ok",
+		unicycler_scaffold_index="{BASE_DIR}/{smp}_unicycler_assembly/index.ok"
+        output:
+                bowtie_bam_spades= "{BASE_DIR}/{smp}_spades_assembly/scaffolds.bam",
+                bowtie_bam_stats_spades= "{BASE_DIR}/{smp}_spades_assembly/scaffolds.bam.stats",
+		bowtie_bam_unicycler= "{BASE_DIR}/{smp}_unicycler_assembly/assembly.bam",
+                bowtie_bam_stats_unicycler= "{BASE_DIR}/{smp}_unicycler_assembly/assembly.bam.stats",
+		bowtie_spades_check="{BASE_DIR}/{smp}_spades_assembly/bowtie.ok",
+		bowtie_unicycler_check="{BASE_DIR}/{smp}_unicycler_assembly/bowtie.ok"
+        shell:"""
+                {BOWTIE2_DIR}bowtie2 -t --local --no-unal -x {BASE_DIR}/{wildcards.smp}_spades_assembly/scaffolds -q -1 {input.fastqR1_unmapped_zip} -2 {input.fastqR2_unmapped_zip} 2>{output.bowtie_bam_stats_spades} | {SAMTOOLS_DIR}samtools view -Sb | {SAMTOOLS_DIR}samtools sort -o {output.bowtie_bam_spades}
+		{BOWTIE2_DIR}bowtie2 -t --local --no-unal -x {BASE_DIR}/{wildcards.smp}_unicycler_assembly/assembly -q -1 {input.fastqR1_unmapped_zip} -2 {input.fastqR2_unmapped_zip} 2>{output.bowtie_bam_stats_unicycler} | {SAMTOOLS_DIR}samtools view -Sb | {SAMTOOLS_DIR}samtools sort -o {output.bowtie_bam_unicycler}
+		ls {input.spades_scaffold_index}
+		ls {input.unicycler_scaffold_index}
+		touch {output.bowtie_spades_check}
+		touch {output.bowtie_unicycler_check}
+	"""
