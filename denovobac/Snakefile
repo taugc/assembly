@@ -12,7 +12,7 @@ PROKKA_GBK="/Pseudomonas_aeruginosa_PAO1_107.gbk"
 
 ## SET TOOLDIR
 TRIMMO_DIR= TOOL_DIR + "/Trimmomatic-0.38"
-FASTQC_DIR= TOOL_DIR + "/FastQC"
+FASTQC_DIR=""
 BWA_DIR= ""
 SAMTOOLS_DIR= ""
 BOWTIE2_DIR= ""
@@ -60,7 +60,7 @@ rule pre_trim_fastq:
 		"{BASE_DIR}/{smp}_R1_001_fastqc.zip",
 		"{BASE_DIR}/{smp}_R2_001_fastqc.zip"
 	shell:"""
-		{FASTQC_DIR}/fastqc --outdir {BASE_DIR} -f fastq {input}
+		{FASTQC_DIR}fastqc --outdir {BASE_DIR} -f fastq {input}
 	"""
 
 rule trim_fastq:
@@ -84,7 +84,7 @@ rule post_trim_fastq:
 		"{BASE_DIR}/{smp}_R1_001_trim_paired_fastqc.zip",
 		"{BASE_DIR}/{smp}_R2_001_trim_paired_fastqc.zip"
 	shell:"""
-		{FASTQC_DIR}/fastqc --outdir {BASE_DIR} -f fastq {input}
+		{FASTQC_DIR}fastqc --outdir {BASE_DIR} -f fastq {input}
 	"""
 
 rule align_bwa_phix:
